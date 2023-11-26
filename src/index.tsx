@@ -51,6 +51,8 @@ export interface IReactToPrintProps {
     children?: React.ReactNode;
     /** Content to be printed */
     content: () => React.ReactInstance | null;
+    /** Clear all styles on the parent element. default: false */
+    clearStyles?: boolean;
     /** Copy styles over into print window. default: true */
     copyStyles?: boolean;
     /**
@@ -120,7 +122,7 @@ export default class ReactToPrint extends React.Component<IReactToPrintProps> {
                     if (target.contentWindow.print) {
                         const tempContentDocumentTitle = target.contentDocument?.title ?? '';
                         const tempOwnerDocumentTitle = target.ownerDocument.title;
-    
+
                         // Override page and various target content titles during print
                         // NOTE: some browsers seem to take the print title from the highest level
                         // title, while others take it from the lowest level title. So, we set the title
@@ -128,19 +130,19 @@ export default class ReactToPrint extends React.Component<IReactToPrintProps> {
                         if (documentTitle) {
                             // Print filename in Chrome
                             target.ownerDocument.title = documentTitle;
-    
+
                             // Print filename in Firefox, Safari
                             if (target.contentDocument) {
                                 target.contentDocument.title = documentTitle;
                             }
                         }
-    
+
                         target.contentWindow.print();
-    
+
                         // Restore the page's original title information
                         if (documentTitle) {
                             target.ownerDocument.title = tempOwnerDocumentTitle;
-    
+
                             if (target.contentDocument) {
                                 target.contentDocument.title = tempContentDocumentTitle;
                             }
@@ -215,6 +217,7 @@ export default class ReactToPrint extends React.Component<IReactToPrintProps> {
             bodyClass,
             content,
             copyStyles,
+            clearStyles,
             fonts,
             pageStyle,
             nonce,
@@ -245,6 +248,7 @@ export default class ReactToPrint extends React.Component<IReactToPrintProps> {
 
         const contentNodes = findDOMNode(contentEl);
 
+
         if (!contentNodes) {
             this.logMessages(['"react-to-print" could not locate the DOM node corresponding with the `content` prop']);
             return;
@@ -253,6 +257,11 @@ export default class ReactToPrint extends React.Component<IReactToPrintProps> {
         // React components can return a bare string as a valid JSX response
         const clonedContentNodes = contentNodes.cloneNode(true);
         const isText = clonedContentNodes instanceof Text;
+
+        if (clearStyles && clonedContentNodes instanceof Element) {
+            clonedContentNodes.className = ""
+            clonedContentNodes.removeAttribute("style")
+        }
 
         const globalLinkNodes = document.querySelectorAll("link[rel~='stylesheet'], link[as='style']");
         const renderComponentImgNodes = isText ? [] : (clonedContentNodes as Element).querySelectorAll("img");
@@ -293,7 +302,7 @@ export default class ReactToPrint extends React.Component<IReactToPrintProps> {
             }
         };
 
-        printWindow.onload = () => {
+        printWindow.onload = async () => {
             // Some agents, such as IE11 and Enzyme (as of 2 Jun 2020) continuously call the
             // `onload` callback. This ensures that it is only called once.
             printWindow.onload = null;
@@ -305,13 +314,16 @@ export default class ReactToPrint extends React.Component<IReactToPrintProps> {
 
                 if (fonts) {
                     if (printWindow.contentDocument?.fonts && printWindow.contentWindow?.FontFace) {
-                        fonts.forEach((font) => {
+
+                        await Promise.all(fonts.map(async (font) => {
                             const fontFace = new FontFace(
                                 font.family,
                                 font.source,
                                 { weight: font.weight, style: font.style }
                             );
                             printWindow.contentDocument!.fonts.add(fontFace);
+                            await fontFace.load()
+
                             fontFace.loaded
                                 .then(() => {
                                     markLoaded(fontFace);
@@ -319,7 +331,7 @@ export default class ReactToPrint extends React.Component<IReactToPrintProps> {
                                 .catch((error: Error) => {
                                     markLoaded(fontFace, ['Failed loading the font:', fontFace, 'Load error:', error]);
                                 });
-                        });
+                        }));
                     } else {
                         fonts.forEach(font => markLoaded(font)); // Pretend we loaded the fonts to allow printing to continue
                         this.logMessages(['"react-to-print" is not able to load custom fonts because the browser does not support the FontFace API but will continue attempting to print the page']);
@@ -421,7 +433,7 @@ export default class ReactToPrint extends React.Component<IReactToPrintProps> {
                     const copiedCRs = domDoc.querySelectorAll(checkedSelector);
                     for (let i = 0; i < originalCRs.length; i++) {
                         (copiedCRs[i] as HTMLInputElement).checked =
-                        (originalCRs[i] as HTMLInputElement).checked;
+                            (originalCRs[i] as HTMLInputElement).checked;
                     }
 
                     // Copy select states
@@ -434,11 +446,11 @@ export default class ReactToPrint extends React.Component<IReactToPrintProps> {
                 }
 
                 if (copyStyles) {
-                    const styleAndLinkNodes = document.querySelectorAll("style, link[rel~='stylesheet'], link[as='style']");
+                    const styleAndLinkNodes = document.querySelectorAll("style, link[rel~='stylesheet'], link[as='style'], html");
 
                     for (let i = 0, styleAndLinkNodesLen = styleAndLinkNodes.length; i < styleAndLinkNodesLen; ++i) {
                         const node = styleAndLinkNodes[i];
-                        
+
                         if (node.tagName.toLowerCase() === 'style') { // <style> nodes
                             const newHeadEl = domDoc.createElement(node.tagName);
                             const sheet = (node as HTMLStyleElement).sheet as CSSStyleSheet;
@@ -466,7 +478,12 @@ export default class ReactToPrint extends React.Component<IReactToPrintProps> {
                                 newHeadEl.appendChild(domDoc.createTextNode(styleCSS));
                                 domDoc.head.appendChild(newHeadEl);
                             }
-                        } else { // <link> nodes, and any others
+                        }
+                        else if (node.tagName.toLowerCase() === "html") {
+                            const notionFont = document.documentElement.style.getPropertyValue("--notion-font")
+                            domDoc.documentElement.style.setProperty("--notion-font", notionFont)
+                        }
+                        else { // <link> nodes, and any others
                             // Many browsers will do all sorts of weird things if they encounter an
                             // empty `href` tag (which is invalid HTML). Some will attempt to load
                             // the current page. Some will attempt to load the page"s parent
@@ -495,7 +512,7 @@ export default class ReactToPrint extends React.Component<IReactToPrintProps> {
                                             newHeadEl.setAttribute(attr.nodeName, attr.nodeValue || "");
                                         }
                                     }
-    
+
                                     newHeadEl.onload = () => markLoaded(newHeadEl);
                                     newHeadEl.onerror = (_event, _source, _lineno, _colno, error) => markLoaded(newHeadEl, ["Failed to load", newHeadEl, "Error:", error]);
                                     if (nonce) {
